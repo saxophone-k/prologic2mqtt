@@ -1,0 +1,18 @@
+services:
+  prologic2mqtt:
+    image: ghcr.io/saxophone-k/prologic2mqtt:latest
+    restart: unless-stopped
+    environment:
+      # ── EW11 RS-485 bridge ────────────────────────────────────────────────
+      P2M_EW11_HOST: "192.168.107.61"
+      P2M_EW11_PORT: "8899"
+
+      # ── MQTT broker (required) ────────────────────────────────────────────
+      P2M_MQTT_HOST: "192.168.1.x"        # your Mosquitto/TrueNAS IP
+      # P2M_MQTT_PORT: "1883"
+      # P2M_MQTT_USERNAME: ""             # uncomment if broker requires auth
+      # P2M_MQTT_PASSWORD: ""
+
+      # ── Options ───────────────────────────────────────────────────────────
+      # P2M_MQTT_TOPIC_PREFIX: "prologic2mqtt"
+      # P2M_LOG_LEVEL: "info"             # debug, info, warning, error
