@@ -217,8 +217,12 @@ class ProLogicMQTTBridge:
         # Timer fields: clear immediately when the corresponding feature is off
         self._mqtt.publish(t("spa_timer"),
             _fmt_timer(state.get("spa_timer_remaining")) if mode == "SPA" else "")
-        self._mqtt.publish(t("jets_timer"),
-            _fmt_timer(state.get("jets_timer_remaining")) if state.get("jets_on") else "")
+        if state.get("jets_on"):
+            jets_timer = (_fmt_timer(state.get("spa_timer_remaining")) if mode == "SPA"
+                          else _fmt_timer(state.get("jets_timer_remaining")))
+        else:
+            jets_timer = ""
+        self._mqtt.publish(t("jets_timer"), jets_timer)
         self._mqtt.publish(t("super_chlor_timer"),
             _fmt_timer(state.get("super_chlor_remaining")) if state.get("super_chlor_on") else "")
 
