@@ -15,11 +15,14 @@ Run unit tests:
     python parser.py --test
 """
 
+import logging
 import re
 import socket
 import sys
 import time
 from datetime import datetime
+
+_log = logging.getLogger(__name__)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -89,9 +92,9 @@ _RE_AIR_TEMP     = re.compile(r"Air\s+Temp\s+(\d+).F",                        re
 _RE_SALT         = re.compile(r"Salt\s+Level\s+(\d+)\s+PPM",                  re.I)
 _RE_POOL_SWG     = re.compile(r"Pool\s+Chlorinator\s+(\d+)%",                 re.I)
 _RE_SPA_SWG      = re.compile(r"Spa\s+Chlorinator\s+(\d+)%",                  re.I)
-# Jets timer before spa timer: "Spa Jets -CountDn" vs "Spa-CountDn" (different literals)
-_RE_JETS_TIMER   = re.compile(r"Spa\s+Jets\s+-CountDn\s+(\d+:\d+)\s+remaining", re.I)
-_RE_SPA_TIMER    = re.compile(r"Spa-CountDn\s+(\d+:\d+)\s+remaining",         re.I)
+# Jets timer before spa timer — checked first so "Spa Jets" can't match the spa pattern
+_RE_JETS_TIMER   = re.compile(r"Jets.{0,10}CountDn\s+(\d+:\d+)\s+remaining",  re.I)
+_RE_SPA_TIMER    = re.compile(r"Spa.{0,5}CountDn\s+(\d+:\d+)\s+remaining",    re.I)
 _RE_CHLOR_TIMER  = re.compile(r"Super\s+Chlorinate\s+(\d+:\d+)\s+remaining",  re.I)
 
 _RE_HEAT_MODE = re.compile(r"Heat\s+Pump\s+(Auto\s+Control|Manual\s+Off)", re.I)
@@ -319,6 +322,7 @@ class ProLogicParser:
 
     def _apply_text(self, text: str) -> bool:
         """Match any recognized patterns in a 40-char screen; update state."""
+        _log.debug("Display: %r", text.strip())
         s = self.state
         changed = False
 
