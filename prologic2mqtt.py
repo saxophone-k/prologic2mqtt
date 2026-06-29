@@ -214,10 +214,13 @@ class ProLogicMQTTBridge:
             self._mqtt.publish(t("heat_pump_activity"),
                                "Heating" if heater_on else "Off")
 
-        # Timer fields: publish empty string when inactive so HA clears them
-        self._mqtt.publish(t("spa_timer"),         _fmt_timer(state.get("spa_timer_remaining")))
-        self._mqtt.publish(t("jets_timer"),        _fmt_timer(state.get("jets_timer_remaining")))
-        self._mqtt.publish(t("super_chlor_timer"), _fmt_timer(state.get("super_chlor_remaining")))
+        # Timer fields: clear immediately when the corresponding feature is off
+        self._mqtt.publish(t("spa_timer"),
+            _fmt_timer(state.get("spa_timer_remaining")) if mode == "SPA" else "")
+        self._mqtt.publish(t("jets_timer"),
+            _fmt_timer(state.get("jets_timer_remaining")) if state.get("jets_on") else "")
+        self._mqtt.publish(t("super_chlor_timer"),
+            _fmt_timer(state.get("super_chlor_remaining")) if state.get("super_chlor_on") else "")
 
         # Panel clock
         clk = state.get("panel_clock")
