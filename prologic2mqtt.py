@@ -56,6 +56,14 @@ log = logging.getLogger("prologic2mqtt")
 _DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
+def _fmt_timer(val: str | None) -> str:
+    """Convert "H:MM" → "HhMMm", or return "" if inactive."""
+    if not val:
+        return ""
+    h, _, m = val.partition(":")
+    return f"{h}h{m}m" if _ else val
+
+
 # ── Bridge ────────────────────────────────────────────────────────────────────
 
 class ProLogicMQTTBridge:
@@ -207,9 +215,9 @@ class ProLogicMQTTBridge:
                                "Heating" if heater_on else "Off")
 
         # Timer fields: publish empty string when inactive so HA clears them
-        self._mqtt.publish(t("spa_timer"),         state.get("spa_timer_remaining")   or "")
-        self._mqtt.publish(t("jets_timer"),        state.get("jets_timer_remaining")  or "")
-        self._mqtt.publish(t("super_chlor_timer"), state.get("super_chlor_remaining") or "")
+        self._mqtt.publish(t("spa_timer"),         _fmt_timer(state.get("spa_timer_remaining")))
+        self._mqtt.publish(t("jets_timer"),        _fmt_timer(state.get("jets_timer_remaining")))
+        self._mqtt.publish(t("super_chlor_timer"), _fmt_timer(state.get("super_chlor_remaining")))
 
         # Panel clock
         clk = state.get("panel_clock")
