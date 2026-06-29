@@ -247,7 +247,7 @@ class ProLogicParser:
     def _apply_display(self, data: bytes) -> bool:
         if len(data) < 40:
             return False
-        text = data[:40].decode("ascii", errors="replace")
+        text = data[:40].decode("latin-1")
         return self._apply_text(text)
 
     # ── LONG_DISPLAY (04 0a) ──────────────────────────────────────────────────
@@ -267,9 +267,9 @@ class ProLogicParser:
             return False
         variant = data[2]
         if variant == 0x02 and len(data) >= 52:
-            return self._apply_text(data[12:52].decode("ascii", errors="replace"))
+            return self._apply_text(data[12:52].decode("latin-1"))
         if variant == 0x03 and len(data) >= 43:
-            return self._apply_text(data[3:43].decode("ascii", errors="replace"))
+            return self._apply_text(data[3:43].decode("latin-1"))
         return False
 
     def _apply_long_8c(self, data: bytes) -> bool:
@@ -322,6 +322,7 @@ class ProLogicParser:
 
     def _apply_text(self, text: str) -> bool:
         """Match any recognized patterns in a 40-char screen; update state."""
+        text = text.replace('\xba', ':')   # panel uses 0xBA as colon separator
         _log.debug("Display: %r", text.strip())
         s = self.state
         changed = False
