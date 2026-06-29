@@ -123,43 +123,44 @@ class ProLogicMQTTBridge:
             self._mqtt.publish(self._disc("binary_sensor", key),
                                json.dumps(p), retain=True)
 
+        def remove(component, key):
+            """Tell HA to delete a previously discovered entity."""
+            self._mqtt.publish(self._disc(component, key), "", retain=True)
+
+        # ── Remove entities that were renamed or merged in this version ───────
+        remove("sensor",        "pool_temp")      # merged → water_temp
+        remove("sensor",        "spa_temp")       # merged → water_temp
+        remove("sensor",        "pool_swg")       # merged → chlorinator
+        remove("sensor",        "spa_swg")        # merged → chlorinator
+        remove("binary_sensor", "heater")         # replaced → heat_pump_activity sensor
+
         # ── Sensors ───────────────────────────────────────────────────────────
-        sensor("pool_temp",  "Pool Temperature",
-               unit="°F", device_class="temperature", state_class="measurement")
-        sensor("air_temp",   "Air Temperature",
-               unit="°F", device_class="temperature", state_class="measurement")
-        sensor("spa_temp",   "Spa Temperature",
+        sensor("water_temp",  "Water Temperature",
                unit="°F", device_class="temperature", state_class="measurement")
         sensor("pool_setpoint", "Pool Setpoint",
                unit="°F", device_class="temperature",
                icon="mdi:thermometer-chevron-up")
-        sensor("salt_ppm",   "Salt Level",
+        sensor("air_temp",    "Air Temperature",
+               unit="°F", device_class="temperature", state_class="measurement")
+        sensor("chlorinator", "Chlorinator Level",
+               unit="%", state_class="measurement", icon="mdi:water-percent")
+        sensor("salt_ppm",    "Salt Level",
                unit="ppm", state_class="measurement", icon="mdi:shaker-outline")
-        sensor("pool_swg",   "Pool Chlorinator",
-               unit="%",   state_class="measurement", icon="mdi:water-percent")
-        sensor("spa_swg",    "Spa Chlorinator",
-               unit="%",   state_class="measurement", icon="mdi:water-percent")
-        sensor("mode",       "Mode",             icon="mdi:pool")
-        sensor("heat_pump_mode", "Heat Pump Mode", icon="mdi:heat-pump-outline")
-        sensor("spa_timer",  "Spa Timer",        icon="mdi:timer-outline")
-        sensor("jets_timer", "Jets Timer",       icon="mdi:timer-outline")
+        sensor("mode",        "Mode",             icon="mdi:pool")
+        sensor("heat_pump_mode",     "Heat Pump Mode",     icon="mdi:heat-pump-outline")
+        sensor("heat_pump_activity", "Heat Pump Activity", icon="mdi:heat-pump")
+        sensor("spa_timer",   "Spa Timer",        icon="mdi:timer-outline")
+        sensor("jets_timer",  "Spa Jets Timer",   icon="mdi:timer-outline")
         sensor("super_chlor_timer", "Super Chlorinate Timer", icon="mdi:timer-outline")
-        sensor("panel_clock","Panel Clock",      icon="mdi:clock-outline")
+        sensor("panel_clock", "Panel Clock",      icon="mdi:clock-outline")
 
         # ── Binary sensors ────────────────────────────────────────────────────
-        # Read-only in Phase 3. Phase 4 will add switch entities with command
-        # topics alongside these; the binary sensors will then be removed.
         binary_sensor("filter_pump", "Filter Pump",
                       device_class="running", icon="mdi:pump")
         binary_sensor("jets",        "Spa Jets",        icon="mdi:turbine")
         binary_sensor("super_chlor", "Super Chlorinate",icon="mdi:flask-outline")
-        binary_sensor("heater",      "Heater Active",
-                      device_class="heat", icon="mdi:heat-pump")
 
-        # Pool/Spa toggle: 3-state (POOL/SPA/TRANSITION) -> exposed via 'mode'
-        # sensor above. A dedicated switch will be added in Phase 4.
-
-        log.info("MQTT Discovery published — 13 sensors + 4 binary sensors")
+        log.info("MQTT Discovery published — 12 sensors + 3 binary sensors")
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -171,15 +172,39 @@ class ProLogicMQTTBridge:
             if value is not None:
                 self._mqtt.publish(t(topic), str(value))
 
-        pub("pool_temp",         state.get("pool_temp_f"))
-        pub("air_temp",          state.get("air_temp_f"))
-        pub("spa_temp",          state.get("spa_temp_f"))
-        pub("pool_setpoint",     state.get("pool_setpoint_f"))
-        pub("salt_ppm",          state.get("salt_ppm"))
-        pub("pool_swg",          state.get("pool_swg_pct"))
-        pub("spa_swg",           state.get("spa_swg_pct"))
-        pub("mode",              state.get("mode"))
-        pub("heat_pump_mode",    state.get("heat_pump_mode"))
+        # Water temperature: spa temp when in spa mode, pool temp otherwise
+        mode = state.get("mode")
+        if mode == "SPA":
+            water_temp = state.get("spa_temp_f") or state.get("pool_temp_f")
+        else:
+            water_temp = state.get("pool_temp_f")
+        pub("water_temp", water_temp)
+
+        pub("pool_setpoint",  state.get("pool_setpoint_f"))
+        pub("air_temp",       state.get("air_temp_f"))
+        pub("salt_ppm",       state.get("salt_ppm"))
+        pub("mode",           mode)
+        pub("panel_clock",    None)   # handled separately below
+
+        # Chlorinator level: spa value in spa mode, pool value otherwise
+        if mode == "SPA":
+            chlor = state.get("spa_swg_pct")
+        else:
+            chlor = state.get("pool_swg_pct")
+        pub("chlorinator", chlor)
+
+        # Heat Pump Mode: display panel labels instead of internal values
+        hp_mode = state.get("heat_pump_mode")
+        if hp_mode == "auto":
+            self._mqtt.publish(t("heat_pump_mode"), "Auto Control")
+        elif hp_mode == "off":
+            self._mqtt.publish(t("heat_pump_mode"), "Manual Off")
+
+        # Heat Pump Activity: "Heating" when relay energised, "Off" otherwise
+        heater_on = state.get("heater_on")
+        if heater_on is not None:
+            self._mqtt.publish(t("heat_pump_activity"),
+                               "Heating" if heater_on else "Off")
 
         # Timer fields: publish empty string when inactive so HA clears them
         self._mqtt.publish(t("spa_timer"),         state.get("spa_timer_remaining")   or "")
@@ -199,7 +224,6 @@ class ProLogicMQTTBridge:
             ("filter_pump", "filter_running"),
             ("jets",        "jets_on"),
             ("super_chlor", "super_chlor_on"),
-            ("heater",      "heater_on"),
         ]:
             val = state.get(key)
             if val is not None:
