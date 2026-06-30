@@ -14,8 +14,6 @@ Import:
     ctrl = ProLogicController("192.168.107.61", 8899)
     ctrl.register_callback(lambda state: ...)
     asyncio.run(ctrl.run())
-
-Phase 2: read-only.  send_key() will be added in Phase 4.
 """
 
 import asyncio
@@ -32,6 +30,19 @@ PORT_DEFAULT    = 8899
 RECONNECT_DELAY = 10   # seconds before each reconnect attempt
 CONNECT_TIMEOUT = 10   # seconds for the initial TCP handshake
 READ_TIMEOUT    = 5    # seconds; keepalive fires at 10 Hz so only triggers on true link loss
+
+# ── Command frames (00 8c Aqua Pod wireless format, verified on hardware) ─────
+
+def _mk_cmd(key4: bytes) -> bytes:
+    d = bytes([0x00, 0x8c, 0x01]) + key4 + key4 + bytes([0x00])
+    cs = (0x10 + 0x02 + sum(d)) & 0xFFFF
+    return b"\x10\x02" + d + bytes([cs >> 8, cs & 0xFF]) + b"\x10\x03"
+
+CMD_FILTER      = _mk_cmd(bytes.fromhex("80000000"))
+CMD_JETS        = _mk_cmd(bytes.fromhex("00020000"))
+CMD_POOL_SPA    = _mk_cmd(bytes.fromhex("40000000"))
+CMD_HP          = _mk_cmd(bytes.fromhex("00000400"))
+CMD_SUPER_CHLOR = _mk_cmd(bytes.fromhex("00000004"))
 
 
 class ProLogicController:
@@ -54,6 +65,9 @@ class ProLogicController:
         self.parser  = ProLogicParser()
         self._callbacks: list = []
         self._running = False
+        self._writer: asyncio.StreamWriter | None = None
+        self._cmd_locks:    dict[str, asyncio.Lock] = {}
+        self._cmd_debounce: dict[str, float]        = {}
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -100,6 +114,107 @@ class ProLogicController:
         """Signal the run loop to exit cleanly."""
         self._running = False
 
+    async def send_command(
+        self,
+        key: str,
+        frame: bytes,
+        check_fn,
+        pre_check_fn=None,
+        debounce: float = 20.0,
+        verify_timeout: float = 20.0,
+        retry_pause: float = 3.0,
+    ) -> bool:
+        """
+        Read-before-write command sender with per-key debounce.
+
+        key           : unique name for this control (used for debounce + lock)
+        frame         : 00 8c command bytes to send
+        check_fn()    : callable → True when the desired state is confirmed
+        pre_check_fn(): callable → True when already at desired state (noop).
+                        If None, check_fn is used for the noop check too.
+        debounce      : ignore duplicate commands within this many seconds
+        verify_timeout: how long to poll for confirmation after sending
+        retry_pause   : seconds to wait before re-reading state / retrying
+
+        Returns True if the desired state was (or already is) confirmed.
+        """
+        loop = asyncio.get_running_loop()
+
+        # Debounce: drop commands that arrive while the previous one is still settling
+        now = loop.time()
+        if now - self._cmd_debounce.get(key, 0.0) < debounce:
+            _LOGGER.debug("send_command %s: debounced", key)
+            return True
+
+        lock = self._cmd_locks.setdefault(key, asyncio.Lock())
+        if lock.locked():
+            _LOGGER.debug("send_command %s: command in progress, dropping", key)
+            return True
+
+        async with lock:
+            # Read-before-write: noop if already at desired state
+            noop_check = pre_check_fn if pre_check_fn is not None else check_fn
+            if noop_check():
+                _LOGGER.info("send_command %s: noop (already at desired state)", key)
+                return True
+
+            # Stamp debounce before sending so rapid double-presses are dropped
+            self._cmd_debounce[key] = loop.time()
+
+            # Double-send (200 ms apart) — matches verified working pattern
+            await self._send_raw(frame)
+            await asyncio.sleep(0.2)
+            await self._send_raw(frame)
+            _LOGGER.debug("send_command %s: sent x2", key)
+
+            # Wait for confirmation
+            if await self._wait_for(check_fn, verify_timeout):
+                _LOGGER.info("send_command %s: confirmed", key)
+                return True
+
+            # Not confirmed in time — re-read (catches delayed EW11 execution)
+            await asyncio.sleep(retry_pause)
+            if check_fn():
+                _LOGGER.info("send_command %s: confirmed (delayed execution)", key)
+                return True
+
+            # Retry once
+            _LOGGER.warning("send_command %s: no confirmation, retrying", key)
+            await self._send_raw(frame)
+            await asyncio.sleep(0.2)
+            await self._send_raw(frame)
+
+            if await self._wait_for(check_fn, verify_timeout):
+                _LOGGER.info("send_command %s: confirmed (retry)", key)
+                return True
+
+            await asyncio.sleep(retry_pause)
+            result = check_fn()
+            if result:
+                _LOGGER.info("send_command %s: confirmed (retry delayed)", key)
+            else:
+                _LOGGER.error("send_command %s: FAILED after retry", key)
+            return result
+
+    async def _send_raw(self, data: bytes) -> None:
+        if self._writer is None or self._writer.is_closing():
+            _LOGGER.warning("_send_raw: no active connection")
+            return
+        try:
+            self._writer.write(data)
+            await self._writer.drain()
+        except Exception as exc:
+            _LOGGER.error("_send_raw error: %s", exc)
+
+    async def _wait_for(self, fn, timeout: float) -> bool:
+        """Poll fn() every 100 ms until it returns True or timeout elapses."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if fn():
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     async def _connect_and_read(self) -> None:
@@ -109,6 +224,7 @@ class ProLogicController:
             timeout=CONNECT_TIMEOUT,
         )
         _LOGGER.info("Connected to %s:%d", self.host, self.port)
+        self._writer = writer
         try:
             while self._running:
                 try:
@@ -125,6 +241,7 @@ class ProLogicController:
                 if self.parser.feed(chunk):
                     self._fire_callbacks()
         finally:
+            self._writer = None
             writer.close()
             try:
                 await writer.wait_closed()

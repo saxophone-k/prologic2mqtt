@@ -24,7 +24,10 @@ import signal
 
 import paho.mqtt.client as mqtt
 
-from controller import ProLogicController
+from controller import (
+    ProLogicController,
+    CMD_FILTER, CMD_JETS, CMD_POOL_SPA, CMD_HP, CMD_SUPER_CHLOR,
+)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -77,6 +80,7 @@ class ProLogicMQTTBridge:
         )
         self._running  = True
         self._last_state: dict = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── Topic helpers ─────────────────────────────────────────────────────────
 
@@ -131,23 +135,40 @@ class ProLogicMQTTBridge:
             self._mqtt.publish(self._disc("binary_sensor", key),
                                json.dumps(p), retain=True)
 
+        def switch(key, name, *, icon=None):
+            p = {
+                "name":            name,
+                "unique_id":       f"prologic_{key}",
+                "device":          dev,
+                "state_topic":     self._t(key),
+                "command_topic":   self._t(f"{key}/set"),
+                "payload_on":      "ON",
+                "payload_off":     "OFF",
+                "optimistic":      False,
+                "availability":    [avail],
+            }
+            if icon: p["icon"] = icon
+            self._mqtt.publish(self._disc("switch", key), json.dumps(p), retain=True)
+
         def remove(component, key):
             """Tell HA to delete a previously discovered entity."""
             self._mqtt.publish(self._disc(component, key), "", retain=True)
 
-        # ── Remove entities that were renamed or merged in this version ───────
+        # ── Remove stale entities from previous versions ──────────────────────
         remove("sensor",        "pool_temp")      # merged → water_temp
         remove("sensor",        "spa_temp")       # merged → water_temp
         remove("sensor",        "pool_swg")       # merged → chlorinator
         remove("sensor",        "spa_swg")        # merged → chlorinator
         remove("binary_sensor", "heater")         # replaced → heat_pump_activity sensor
+        remove("binary_sensor", "filter_pump")    # promoted → switch
+        remove("binary_sensor", "jets")           # promoted → switch
+        remove("binary_sensor", "super_chlor")    # promoted → switch
+        remove("sensor",        "pool_setpoint")  # removed — not reliably available on bus
+        remove("sensor",        "spa_setpoint")   # removed — not reliably available on bus
 
         # ── Sensors ───────────────────────────────────────────────────────────
         sensor("water_temp",  "Water Temperature",
                unit="°F", device_class="temperature", state_class="measurement")
-        sensor("pool_setpoint", "Pool Setpoint",
-               unit="°F", device_class="temperature",
-               icon="mdi:thermometer-chevron-up")
         sensor("air_temp",    "Air Temperature",
                unit="°F", device_class="temperature", state_class="measurement")
         sensor("chlorinator", "Chlorinator Level",
@@ -162,13 +183,14 @@ class ProLogicMQTTBridge:
         sensor("super_chlor_timer", "Super Chlorinate Timer", icon="mdi:timer-outline")
         sensor("panel_clock", "Panel Clock",      icon="mdi:clock-outline")
 
-        # ── Binary sensors ────────────────────────────────────────────────────
-        binary_sensor("filter_pump", "Filter Pump",
-                      device_class="running", icon="mdi:pump")
-        binary_sensor("jets",        "Spa Jets",        icon="mdi:turbine")
-        binary_sensor("super_chlor", "Super Chlorinate",icon="mdi:flask-outline")
+        # ── Switches ──────────────────────────────────────────────────────────
+        switch("filter_pump", "Filter Pump",      icon="mdi:pump")
+        switch("jets",        "Spa Jets",         icon="mdi:turbine")
+        switch("super_chlor", "Super Chlorinate", icon="mdi:flask-outline")
+        switch("pool_spa",    "Spa Mode",         icon="mdi:pool")
+        switch("heat_pump",   "Heat Pump",        icon="mdi:heat-pump-outline")
 
-        log.info("MQTT Discovery published — 12 sensors + 3 binary sensors")
+        log.info("MQTT Discovery published — 11 sensors + 5 switches")
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -188,7 +210,6 @@ class ProLogicMQTTBridge:
             water_temp = state.get("pool_temp_f")
         pub("water_temp", water_temp)
 
-        pub("pool_setpoint",  state.get("pool_setpoint_f"))
         pub("air_temp",       state.get("air_temp_f"))
         pub("salt_ppm",       state.get("salt_ppm"))
         pub("mode",           mode)
@@ -234,7 +255,7 @@ class ProLogicMQTTBridge:
                 f"{clk['hour']:02d}:{clk['minute']:02d} {_DOW[clk['dow'] - 1]}",
             )
 
-        # Boolean fields
+        # Switch states — filter, jets, super_chlor
         for topic, key in [
             ("filter_pump", "filter_running"),
             ("jets",        "jets_on"),
@@ -243,6 +264,20 @@ class ProLogicMQTTBridge:
             val = state.get(key)
             if val is not None:
                 self._mqtt.publish(t(topic), "ON" if val else "OFF")
+
+        # pool_spa switch: ON = Spa Mode active, OFF = Pool Mode active
+        if mode == "SPA":
+            self._mqtt.publish(t("pool_spa"), "ON")
+        elif mode == "POOL":
+            self._mqtt.publish(t("pool_spa"), "OFF")
+        # TRANSITION: don't update — leave switch showing last confirmed mode
+
+        # heat_pump switch: ON = Auto Control, OFF = Manual Off
+        hp_mode = state.get("heat_pump_mode")
+        if hp_mode == "auto":
+            self._mqtt.publish(t("heat_pump"), "ON")
+        elif hp_mode == "off":
+            self._mqtt.publish(t("heat_pump"), "OFF")
 
         # Mark online after first valid frame
         if self._ctrl.available:
@@ -262,19 +297,126 @@ class ProLogicMQTTBridge:
         if rc == 0:
             log.info("MQTT connected to %s:%d", CFG["mqtt_host"], CFG["mqtt_port"])
             self._mqtt.publish(self._t("availability"), "online", retain=True)
+            self._mqtt.subscribe(f"{CFG['prefix']}/+/set")
         else:
             log.error("MQTT connection failed: rc=%d", rc)
+
+    def _on_mqtt_message(self, client, userdata, msg):
+        """Called from the paho thread when a command arrives on a /set topic."""
+        prefix = CFG["prefix"] + "/"
+        topic  = msg.topic
+        if not (topic.startswith(prefix) and topic.endswith("/set")):
+            return
+        key     = topic[len(prefix):-4]
+        payload = msg.payload.decode("utf-8", errors="ignore").strip().upper()
+        if payload not in ("ON", "OFF"):
+            log.warning("Ignoring unknown payload %r on %s", payload, topic)
+            return
+        desired = (payload == "ON")
+        log.info("Command received: %s = %s", key, payload)
+
+        # Optimistic immediate state publish for instant UI feedback
+        self._mqtt.publish(self._t(key), payload)
+
+        # Schedule the actual command on the asyncio loop
+        if self._loop is None:
+            log.warning("Event loop not ready, dropping command %s", key)
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._handle_command(key, desired), self._loop
+        )
 
     def _on_mqtt_disconnect(self, client, userdata, rc):
         if rc != 0:
             log.warning("MQTT disconnected (rc=%d) — auto-reconnect in progress", rc)
 
+    # ── Command handler ───────────────────────────────────────────────────────
+
+    async def _handle_command(self, key: str, desired: bool) -> None:
+        """
+        Async command handler — runs on the asyncio loop.
+        Builds the appropriate check functions and calls send_command.
+        After the command resolves, the real bus state (from LED_STATE frames)
+        will correct any optimistic publish if needed.
+        """
+        s = self._ctrl.state
+        try:
+            if key == "filter_pump":
+                await self._ctrl.send_command(
+                    key, CMD_FILTER,
+                    check_fn=lambda: self._ctrl.state.get("filter_running") == desired,
+                    pre_check_fn=lambda: self._ctrl.state.get("filter_running") == desired,
+                )
+
+            elif key == "jets":
+                await self._ctrl.send_command(
+                    key, CMD_JETS,
+                    check_fn=lambda: self._ctrl.state.get("jets_on") == desired,
+                    pre_check_fn=lambda: self._ctrl.state.get("jets_on") == desired,
+                )
+
+            elif key == "super_chlor":
+                await self._ctrl.send_command(
+                    key, CMD_SUPER_CHLOR,
+                    check_fn=lambda: self._ctrl.state.get("super_chlor_on") == desired,
+                    pre_check_fn=lambda: self._ctrl.state.get("super_chlor_on") == desired,
+                    debounce=30.0,
+                )
+
+            elif key == "pool_spa":
+                target_mode = "SPA" if desired else "POOL"
+                await self._ctrl.send_command(
+                    key, CMD_POOL_SPA,
+                    check_fn=lambda: self._ctrl.state.get("mode") == target_mode,
+                    pre_check_fn=lambda: self._ctrl.state.get("mode") == target_mode,
+                    verify_timeout=35.0,
+                    debounce=30.0,
+                )
+
+            elif key == "heat_pump":
+                # Capture relay state before sending for the fast-path OFF check.
+                # HP toggle is verified via heater relay (fast, LED) or display
+                # text (slow, up to 20 s).  Both paths are checked.
+                pre_heater = s.get("heater_on")
+
+                if desired:   # → Auto Control
+                    def check_fn():
+                        cs = self._ctrl.state
+                        return bool(cs.get("heater_on")) or cs.get("heat_pump_mode") == "auto"
+                    def pre_check_fn():
+                        return self._ctrl.state.get("heat_pump_mode") == "auto"
+                else:         # → Manual Off
+                    def check_fn():
+                        cs = self._ctrl.state
+                        # Fast path: relay was energised and just opened
+                        if pre_heater and not cs.get("heater_on"):
+                            return True
+                        # Slow path: display text confirmed
+                        return cs.get("heat_pump_mode") == "off"
+                    def pre_check_fn():
+                        return self._ctrl.state.get("heat_pump_mode") == "off"
+
+                await self._ctrl.send_command(
+                    key, CMD_HP, check_fn,
+                    pre_check_fn=pre_check_fn,
+                    verify_timeout=25.0,
+                )
+
+            else:
+                log.warning("Unknown command key: %s", key)
+
+        except Exception:
+            log.exception("Error handling command %s=%s", key, desired)
+
     # ── Main async loop ───────────────────────────────────────────────────────
 
     async def run(self) -> None:
+        self._loop = asyncio.get_running_loop()
+
         # Set up MQTT
         self._mqtt.on_connect    = self._on_mqtt_connect
         self._mqtt.on_disconnect = self._on_mqtt_disconnect
+        self._mqtt.on_message    = self._on_mqtt_message
         if CFG["mqtt_user"]:
             self._mqtt.username_pw_set(CFG["mqtt_user"], CFG["mqtt_pass"])
         self._mqtt.will_set(self._t("availability"), "offline", retain=True)

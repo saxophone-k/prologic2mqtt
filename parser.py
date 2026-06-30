@@ -131,7 +131,6 @@ class ProLogicParser:
     heat_pump_mode        "auto" | "off" | None  (from display text; independent of heater_on)
     air_temp_f            int | None    (binary primary; text cross-checked)
     pool_temp_f           int | None    (short-8c primary; text cross-checked)
-    pool_setpoint_f       int | None    (long-8c body[4]+32; very likely pool setpoint, unconfirmed by setpoint-change test)
     spa_temp_f            int | None    (text only)
     salt_ppm              int | None    (long-8c primary; text cross-checked)
     pool_swg_pct          int | None    (text only)
@@ -155,7 +154,6 @@ class ProLogicParser:
             "heat_pump_mode":         None,
             "air_temp_f":             None,
             "pool_temp_f":            None,
-            "pool_setpoint_f":        None,
             "spa_temp_f":             None,
             "salt_ppm":               None,
             "pool_swg_pct":           None,
@@ -277,7 +275,7 @@ class ProLogicParser:
         Short body (10 bytes): sent every cycle ~1 Hz.
           body[2]=minute, body[3]=hour, body[4]=dow, body[5]=air+40, body[6]=water+40
         Long body (23 bytes): sent ~every 19 s when Aqua Pod base polls.
-          body[4]=pool_setpoint+32 (NOT actual temp — fixed until setpoint changes), body[20]=salt/100
+          body[20]=salt/100  (only confirmed live field; other bytes appear static)
         The two variants use different encodings and carry different information.
         """
         body = data[1:]   # skip 0x8c marker
@@ -285,13 +283,7 @@ class ProLogicParser:
         s = self.state
 
         if len(body) >= 23:
-            # Long 8c — body[4] is the pool SETPOINT (fixed until user changes it),
-            # not the actual water temp; the short 8c body[6] carries the live reading.
-            setpoint_f = body[4] + 32
-            salt       = body[20] * 100
-            if 0 <= setpoint_f <= 150:
-                if s["pool_setpoint_f"] != setpoint_f:
-                    s["pool_setpoint_f"] = setpoint_f; changed = True
+            salt = body[20] * 100
             if 0 <= salt <= 9900:
                 self._bin_salt = salt
                 if s["salt_ppm"] != salt:
@@ -390,7 +382,6 @@ def format_state(state: dict) -> str:
         f"  heat_pump_mode    : {s.get('heat_pump_mode')}",
         f"  air_temp_f        : {s.get('air_temp_f')}",
         f"  pool_temp_f       : {s.get('pool_temp_f')}",
-        f"  pool_setpoint_f   : {s.get('pool_setpoint_f')}",
         f"  spa_temp_f        : {s.get('spa_temp_f')}",
         f"  salt_ppm          : {s.get('salt_ppm')}",
         f"  pool_swg_pct      : {s.get('pool_swg_pct')}",
@@ -516,17 +507,15 @@ def _run_tests() -> bool:
     check("8c-short clock dow",     p4.state["panel_clock"]["dow"],    7)
 
     # --- Long 8c binary ---
-    # pool=84 F -> 84-32=52, salt=3100 PPM -> 31
+    # salt=3100 PPM -> 31
     long_body = bytearray(23)
-    long_body[4]  = 52   # pool temp: byte + 32
     long_body[20] = 31   # salt: byte * 100
     p5 = ProLogicParser()
     p5.feed(_build_frame(b"\x04\x0a", bytes([0x8c]) + bytes(long_body)))
-    check("8c-long pool_setpoint_f", p5.state["pool_setpoint_f"], 84)
-    check("8c-long pool_temp_f none",p5.state["pool_temp_f"],     None)
-    check("8c-long salt_ppm",        p5.state["salt_ppm"],        3100)
+    check("8c-long salt_ppm",        p5.state["salt_ppm"],    3100)
+    check("8c-long pool_temp_f none",p5.state["pool_temp_f"], None)
     # Clock must NOT be written by long-8c path
-    check("8c-long no clock",     p5.state["panel_clock"], None)
+    check("8c-long no clock",        p5.state["panel_clock"], None)
 
     # --- Cross-check validation ---
     p6 = ProLogicParser()
