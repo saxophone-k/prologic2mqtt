@@ -162,6 +162,48 @@ Save and reboot. After reconnect, `telnet <EW11_IP> 8899` should show a stream o
 Reserve a static IP for the EW11's MAC address so it never changes.
 The default in this project is `192.168.107.61` — change `P2M_EW11_HOST` if yours differs.
 
+### Install the Lua script (required for control)
+
+By default the EW11 only **receives** data — it does not transmit on RS-485.
+Sending control commands requires a Lua script loaded into the EW11 via
+**IOTService** (Hi-Flying's Windows configuration tool). The script handles
+the half-duplex direction switch and timing so commands are queued and sent
+immediately after a Keep Alive frame, which is the only safe transmission window.
+
+**Without this script, all sensors work but the switches will have no effect.**
+
+#### Step 1 — Get IOTService
+
+Download the IOTService Windows app from the Hi-Flying FTP:
+`http://ftp.hi-flying.com:9000/IOTService/`
+(download is slow — give it a minute)
+
+#### Step 2 — Connect PC to EW11 temporarily in AP mode
+
+If your EW11 is already on your LAN you can skip to Step 3.
+Otherwise, connect your PC's WiFi to the EW11's own hotspot (`EW11_????`, open network)
+and use IOTService to configure the WiFi → STA mode first.
+
+#### Step 3 — Load the script
+
+1. With your PC on the same LAN as the EW11, open IOTService — the device should appear automatically.
+2. Double-click the device → **Edit** → **Detail** → **Edit Script**.
+3. Set **UART Gap Time to 10 ms** (critical — this is the inter-frame window the script relies on).
+4. Click **Import Script** and select the `EW11_script.txt` file from this repo's `docs/` folder.
+5. Confirm the import and reboot the EW11.
+
+#### The script
+
+The script is included in this repo at `docs/EW11_script.txt`. It was adapted from
+[smith288/pool-controller](https://github.com/smith288/pool-controller). Key behaviour:
+
+- Keep Alive frames (`10 02 01 01 …`) are filtered out and not forwarded to the TCP client
+  (they would flood your bridge with noise). The bridge generates its own timing from the stream.
+- Frames received from the TCP socket (i.e. commands from this bridge) are queued and sent
+  on the RS-485 bus immediately after the next Keep Alive — the only gap the half-duplex bus
+  allows for writing.
+- The script also handles the UNLOCK / HOLD sequence required by some panel variants.
+
 ---
 
 ## Deployment
