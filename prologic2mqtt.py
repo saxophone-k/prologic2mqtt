@@ -81,6 +81,7 @@ class ProLogicMQTTBridge:
         self._running  = True
         self._last_state: dict = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._transition_task: asyncio.Task | None = None
 
     # ── Topic helpers ─────────────────────────────────────────────────────────
 
@@ -182,6 +183,8 @@ class ProLogicMQTTBridge:
         sensor("jets_timer",  "Spa Jets Timer",   icon="mdi:timer-outline")
         sensor("super_chlor_timer", "Super Chlorinate Timer", icon="mdi:timer-outline")
         sensor("panel_clock", "Panel Clock",      icon="mdi:clock-outline")
+        sensor("transition_remaining", "Valve Transition",
+               unit="s", icon="mdi:valve")
 
         # ── Switches ──────────────────────────────────────────────────────────
         switch("filter_pump", "Filter Pump",      icon="mdi:pump")
@@ -190,7 +193,7 @@ class ProLogicMQTTBridge:
         switch("pool_spa",    "Spa Mode",         icon="mdi:pool")
         switch("heat_pump",   "Heat Pump",        icon="mdi:heat-pump-outline")
 
-        log.info("MQTT Discovery published — 11 sensors + 5 switches")
+        log.info("MQTT Discovery published — 12 sensors + 5 switches")
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -202,8 +205,18 @@ class ProLogicMQTTBridge:
             if value is not None:
                 self._mqtt.publish(t(topic), str(value))
 
-        # Water temperature: spa temp when in spa mode, pool temp otherwise
         mode = state.get("mode")
+
+        # Transition countdown — start on entry, cancel on exit
+        if mode == "TRANSITION":
+            if self._transition_task is None or self._transition_task.done():
+                self._transition_task = asyncio.create_task(self._transition_countdown())
+        else:
+            if self._transition_task is not None and not self._transition_task.done():
+                self._transition_task.cancel()
+            self._mqtt.publish(self._t("transition_remaining"), "0")
+
+        # Water temperature: spa temp when in spa mode, pool temp otherwise
         if mode == "SPA":
             water_temp = state.get("spa_temp_f") or state.get("pool_temp_f")
         else:
@@ -290,6 +303,18 @@ class ProLogicMQTTBridge:
         if changed:
             log.info("State update: %s", changed)
         self._last_state = dict(state)
+
+    async def _transition_countdown(self) -> None:
+        """Publish transition_remaining every second from 35 down to 0."""
+        try:
+            for remaining in range(35, -1, -1):
+                self._mqtt.publish(self._t("transition_remaining"), str(remaining))
+                if remaining > 0:
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._transition_task = None
 
     # ── MQTT callbacks ────────────────────────────────────────────────────────
 
