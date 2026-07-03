@@ -4,34 +4,70 @@ Bridge a **Hayward ProLogic PS4** pool controller to **Home Assistant** via MQTT
 
 Uses an Elfin EW11 WiFi–RS-485 adapter to tap the controller's RS-485 bus and
 runs as a Docker container on any local server (TrueNAS, Raspberry Pi, NAS, etc.).
-All pool state is published to your MQTT broker and auto-discovered by Home Assistant.
+All pool state is published to your MQTT broker and auto-discovered by Home Assistant
+as sensors and controllable switches.
+
+> **Vibe-coded with the help of AI.** This project was built through iterative
+> reverse-engineering and testing on a real pool. It works on the hardware it was
+> developed on. My ability to troubleshoot issues on different setups is limited —
+> use it at your own risk, especially the control switches which drive real
+> 240 V equipment and motorized valves.
 
 ---
 
 ## What you get in Home Assistant
 
-| Entity | Type | Description |
-|--------|------|-------------|
-| Pool Temperature | Sensor (°F/°C) | Live water temp (binary, 1 Hz) |
-| Air Temperature | Sensor (°F/°C) | Panel air sensor |
-| Spa Temperature | Sensor (°F/°C) | Spa water temp (display text) |
-| Pool Setpoint | Sensor (°F/°C) | Pool heat setpoint |
-| Salt Level | Sensor (ppm) | Salt chlorinator reading |
-| Pool Chlorinator | Sensor (%) | SWG output % in pool mode |
-| Spa Chlorinator | Sensor (%) | SWG output % in spa mode |
-| Mode | Sensor | POOL / SPA / TRANSITION |
-| Heat Pump Mode | Sensor | auto / off |
-| Filter Pump | Binary sensor | Running / stopped |
-| Spa Jets | Binary sensor | On / off |
-| Super Chlorinate | Binary sensor | Active / inactive |
-| Heater Active | Binary sensor | Relay energised (compressor running) |
-| Spa Timer | Sensor | Spa auto-revert countdown (H:MM) |
-| Jets Timer | Sensor | Jets auto-off countdown (H:MM) |
-| Super Chlorinate Timer | Sensor | Boost-chlor remaining (H:MM) |
-| Panel Clock | Sensor | Controller's internal clock |
+### Sensors (11)
 
-> **Control (Phase 4):** Pool/Spa toggle, Filter Pump, Spa Jets, Heat Pump Auto/Manual, and
-> Super Chlorinate will be added as switches in a future release. This version is read-only.
+| Entity | Description |
+|--------|-------------|
+| Water Temperature | Live water temp — spa temp in Spa mode, pool temp otherwise |
+| Air Temperature | Panel air sensor |
+| Salt Level | Salt chlorinator reading (ppm) |
+| Chlorinator Level | SWG output % — spa value in Spa mode, pool value otherwise |
+| Mode | `POOL` / `SPA` / `TRANSITION` |
+| Heat Pump Mode | `Auto Control` / `Manual Off` |
+| Heat Pump Activity | `Heating` / `Off` (relay state, not just mode) |
+| Spa Timer | Spa auto-revert countdown (e.g. `3h45m`) |
+| Spa Jets Timer | Jets auto-off countdown |
+| Super Chlorinate Timer | Boost-chlor remaining |
+| Panel Clock | Controller's internal clock |
+
+### Switches (5)
+
+| Entity | What it does |
+|--------|--------------|
+| Spa Mode | Toggle between Pool mode and Spa mode |
+| Filter Pump | Turn the main circulation pump on/off |
+| Spa Jets | Turn the spa jets booster pump (AUX 1) on/off |
+| Heat Pump | Auto Control (enabled) vs Manual Off |
+| Super Chlorinate | Start/stop a super-chlorination boost cycle |
+
+> ⚠️ **The control switches drive real equipment.** The Filter Pump runs a 1.5 HP motor,
+> Spa Mode rotates motorized valves, and Heat Pump switches a 40 A heat pump compressor.
+> Test with someone physically present at the panel the first time.
+
+---
+
+## Lovelace dashboard
+
+A ready-to-use phone dashboard card is included in the repo as `lovelace_pool.yaml`.
+
+**Requires:** [Mushroom Cards](https://github.com/piitaya/lovelace-mushroom) and
+[button-card](https://github.com/custom-cards/lovelace-button-card) — both installable via HACS.
+
+**Layout:**
+- Mode chip (POOL / SPA / TRANSITION) + panel clock
+- 4 large control buttons in a 2×2 grid (Spa Mode, Spa Jets, Heat Pump, Filter Pump)
+  - Active timers appear *inside* the button when running
+  - Heat Pump has 3-color logic: grey = off, green = Auto/standby, orange = actively heating
+- 4 compact sensor readouts (Water °F, Air °C, Salt ppm, Chlorinator %)
+- Super Chlorinate full-width button at the bottom with its countdown timer inside
+
+To add it: **Dashboard → Edit → Add Card → Manual** → paste the YAML.
+
+Entity IDs in HA use the `hayward_prologic_` prefix. If any card shows "Entity not found",
+check the exact ID under **Settings → Devices → Hayward ProLogic**.
 
 ---
 
@@ -40,10 +76,10 @@ All pool state is published to your MQTT broker and auto-discovered by Home Assi
 | Item | Notes |
 |------|-------|
 | Hayward ProLogic PS4 (or PS8) | Tested on board G1-066008J-1, display 007-300-01 |
-| [Elfin EW11](http://www.hi-flying.com/elfin-ew11) or EW11A | WiFi–RS-485 bridge. EW11 = 5–18 V, EW11A = 5–36 V. **Buy the EW11, not EW10 (RS-232).** |
+| [Elfin EW11](http://www.hi-flying.com/elfin-ew11) or EW11A | WiFi–RS-485 bridge. **Buy the EW11, not EW10 (RS-232).** EW11 = 5–18 V input, EW11A = 5–36 V. |
 | Home network with 2.4 GHz WiFi | The EW11 does not support 5 GHz |
 | Docker host on the same LAN | TrueNAS SCALE, Raspberry Pi, Synology, etc. |
-| MQTT broker | Mosquitto recommended. Must be reachable by both the Docker host and Home Assistant. |
+| MQTT broker | Mosquitto recommended |
 | Home Assistant | With the MQTT integration enabled |
 
 ---
@@ -51,7 +87,7 @@ All pool state is published to your MQTT broker and auto-discovered by Home Assi
 ## Wiring the EW11 to the ProLogic panel
 
 > ⚠️ **Power down the ProLogic panel before touching the wiring.**
-> The remote rail is fused at 2 A on the board — still treat it with care.
+> The remote rail is fused at 2 A on the board.
 > An optional inline 250–500 mA fuse on the RED tap is good insurance.
 
 ### Which connector to use
@@ -71,8 +107,6 @@ top-left area of the board labelled `RED 1 / BLK 2 / YEL 3 / GRN 4`.
 | 3 | YEL | RS-485 data |
 | 4 | GRN | Ground / common |
 
-The EW11 kit includes an RJ45-to-terminal breakout with screw terminals labelled A / B / C / D.
-
 ### Connection table
 
 | EW11 terminal | Function | → ProLogic terminal |
@@ -91,16 +125,12 @@ on this panel.
 
 ### Power note
 
-The EW11 is powered directly from the panel's 10.65 V remote rail (measured on this unit;
-spec is 10–12 V). No separate power supply is needed. The EW11A accepts up to 36 V and works
-equally well.
+The EW11 is powered directly from the panel's remote rail (~10.6 V measured on this unit).
+No separate power supply is needed. The EW11A accepts up to 36 V and works equally well.
 
 ---
 
 ## EW11 configuration (web UI)
-
-Connect to the EW11's web interface (default IP shown on the device label, or find it in your
-router's DHCP table after it joins your WiFi).
 
 ### WiFi (Network settings)
 | Setting | Value |
@@ -125,12 +155,11 @@ router's DHCP table after it joins your WiFi).
 | Local port | **8899** (or any unused port — update `P2M_EW11_PORT` to match) |
 | Buffer | Raw / transparent (no Modbus framing) |
 
-Save and reboot the EW11. After it reconnects you should be able to `telnet <EW11_IP> 8899`
-and see a stream of binary bytes — that is the RS-485 bus traffic.
+Save and reboot. After reconnect, `telnet <EW11_IP> 8899` should show a stream of binary bytes.
 
 ### Assign a DHCP reservation
 
-In your router, reserve a static IP for the EW11's MAC address so it never changes.
+Reserve a static IP for the EW11's MAC address so it never changes.
 The default in this project is `192.168.107.61` — change `P2M_EW11_HOST` if yours differs.
 
 ---
@@ -140,20 +169,19 @@ The default in this project is `192.168.107.61` — change `P2M_EW11_HOST` if yo
 ### 1. MQTT broker
 
 Make sure Mosquitto (or another broker) is running and reachable on your LAN.
-Note its IP address — you will need it below.
 
 ### 2. Home Assistant — enable MQTT integration
 
-In Home Assistant go to **Settings → Devices & Services → Add Integration → MQTT**.
-Enter your broker's IP and port (default 1883). Leave discovery enabled (default).
+**Settings → Devices & Services → Add Integration → MQTT.**
+Enter your broker's IP and port (default 1883). Leave discovery enabled.
 
 ### 3. Pull and run the container
 
-Copy `docker-compose.yml` from this repository to your Docker host and edit two lines:
+Copy `docker-compose.yml` to your Docker host and edit two lines:
 
 ```yaml
 P2M_EW11_HOST: "192.168.107.61"   # ← your EW11's reserved IP
-P2M_MQTT_HOST: "192.168.1.x"      # ← your Mosquitto broker IP
+P2M_MQTT_HOST: "192.168.1.x"      # ← your MQTT broker IP
 ```
 
 Then run:
@@ -172,11 +200,11 @@ docker compose logs -f
 You should see:
 ```
 Bridge running — EW11 192.168.x.x:8899  ->  MQTT 192.168.x.x:1883
+MQTT Discovery published — 11 sensors + 5 switches
 State update: {'mode': 'POOL', 'filter_running': True, ...}
 ```
 
-Within 30 seconds, all 17 entities appear automatically in Home Assistant under a
-**Hayward ProLogic** device.
+All entities appear automatically in Home Assistant under a **Hayward ProLogic** device.
 
 ### Environment variables reference
 
@@ -206,17 +234,36 @@ ProLogic PS4 panel
 prologic2mqtt (Docker container)
       │  Parses DLE-STX framed RS-485 packets
       │  Decodes LED state, binary sensor frames, display text
+      │  Sends Aqua Pod-format command frames (00 8c) for control
       │
    Mosquitto MQTT broker
-      │  MQTT Discovery → homeassistant/sensor|binary_sensor/prologic_*/config
+      │  MQTT Discovery → homeassistant/sensor|switch/prologic_*/config
       │
    Home Assistant
 ```
 
 The bridge connects to the EW11 over TCP and reads the raw RS-485 stream. The
-ProLogic controller broadcasts status frames at ~10 Hz (keepalive) and ~1 Hz (state).
-The bridge decodes them in real time and publishes only when state changes.
-Auto-reconnects if the EW11 goes offline. No polling — purely push-based.
+ProLogic controller broadcasts status frames continuously. The bridge decodes them
+in real time and publishes only when state changes. Control commands are sent as
+Aqua Pod-format wireless key frames (`00 8c`) — the same format the Aqua Pod
+wireless remote uses, verified working on hardware. Auto-reconnects if the EW11
+goes offline. No polling — purely push-based.
+
+---
+
+## Known limitations
+
+- **Heat setpoints** are not exposed as sensors. They appear on the RS-485 bus only
+  when navigating the Settings menu — they are not continuously broadcast. A future
+  "panel emulator" feature (sending MENU/+/-/←/→ button presses and parsing the
+  display response) would enable reading and setting them.
+- **Timer resolution** is one display rotation cycle (~20–40 s). Timers (spa countdown,
+  jets, super-chlor) are parsed from the rotating 40-character text display, so they
+  update only when that screen appears in the rotation.
+- **Spa temperature** updates on the same display-rotation cadence (not binary, unlike
+  pool and air temp which come from a 1 Hz binary frame).
+- **Single TCP client** — the EW11 only accepts one connection at a time. Running another
+  tool against it simultaneously will starve this bridge.
 
 ---
 
@@ -236,14 +283,14 @@ The EW11A (36 V input) is a drop-in replacement for the EW11 (18 V input). Both 
 ## Protocol notes
 
 A full reverse-engineered protocol specification for this PS4 unit is in
-[`PROTOCOL.md`](PROTOCOL.md) (included in the `prologic-ha` development repository,
-not shipped in this container image). Key facts:
+`PROTOCOL.md` (in the development repository). Key facts:
 
 - Frame: `10 02` [payload] `10 03` with `10 10` byte-stuffing
 - Checksum: 16-bit sum of `10 02` + payload (excluding last 2 bytes), big-endian
-- Temperatures in binary frames use `byte − 40` (short 8c) or `byte + 32` (long 8c)
-- All countdown timers (spa, jets, super-chlor) are text-only — parsed from the
-  rotating 40-character display screen
+- LED_STATE (`01 02`): 4 on-bytes + 4 flashing-bytes; bit map confirmed for this unit
+- Short 8c frame: temperature bytes use `byte − 40`; clock in body[2–4]
+- Long 8c frame: `body[20] × 100 = salt PPM`; other bytes appear static
+- Control: `00 8c 01 [key4] [key4] 00` with standard checksum; double-send 200 ms apart
 
 ---
 
@@ -257,19 +304,20 @@ not shipped in this container image). Key facts:
 **"Required environment variable missing: P2M_MQTT_HOST"**
 - You forgot to set `P2M_MQTT_HOST` in `docker-compose.yml`
 
-**Bridge connects but state never updates (all sensors unknown)**
-- Check `docker compose logs` for "EW11" connection errors
+**Bridge connects but state never updates**
+- Check `docker compose logs` for EW11 connection errors
 - Verify the EW11 IP and port are correct
 - Try `telnet <EW11_IP> 8899` from the Docker host — if it hangs, the EW11 is unreachable
 
-**All sensors show stale / wrong values**
-- Set `P2M_LOG_LEVEL: "debug"` and restart — raw frame counts and state changes appear in logs
-- `bad_cs` count > 0 in logs means RS-485 noise — check wiring, try swapping BLK/YEL data wires
+**Sensors show stale / wrong values**
+- Set `P2M_LOG_LEVEL: "debug"` and restart
+- `bad_cs` count > 0 in logs means RS-485 noise — check wiring, try swapping BLK/YEL
 
-**Pool temperature jumps between two values**
-- Normal: pool temp comes from two sources: the short 8c frame (every ~1 s) and the
-  long 8c frame (every ~19 s, triggered by the Aqua Pod wireless base polling). Both
-  should agree within 1–2 °F once the system is steady.
+**A control switch doesn't respond or bounces back**
+- The bridge uses read-before-write and verifies LED state after each command
+- If the LED doesn't confirm within ~20 s it retries once; check logs for "FAILED after retry"
+- For Pool/Spa toggle: the 35-second valve transition is normal — the switch state reflects
+  the confirmed mode, not the optimistic toggle
 
 ---
 
