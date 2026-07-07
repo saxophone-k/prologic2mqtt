@@ -120,21 +120,38 @@ def _clean_display(s: str) -> str:
     """
     Normalise a latin-1 decoded ProLogic display string for human reading.
 
-    The panel's LCD controller uses two quirks we undo here:
-      • bit 7 set on a character = "cursor highlight" flag on editable fields
-        (e.g. 0xB9 = highlighted '9').  Strip it → plain ASCII.
-      • 0x5F (bare or with bit-7 = 0xDF) = the panel's degree-sign glyph,
-        which renders as '°' on the physical LCD but arrives as underscore.
+    The panel's LCD controller sets bit 7 on characters that belong to the
+    currently selected (editable) field — the cursor highlight.  We wrap
+    consecutive highlighted characters in [ ] so the user can see which
+    value a +/- press would change.
+
+    Additionally, 0x5F (bare or with bit-7 = 0xDF) is the panel's
+    degree-sign glyph; we map it to '°'.
     """
     out = []
+    in_cursor = False
     for c in s:
-        b = ord(c) & 0x7F       # strip bit-7 highlight flag
-        if b == 0x5F:           # degree-sign glyph → °
+        o = ord(c)
+        is_cursor = o > 0x7F
+        b = o & 0x7F
+
+        if is_cursor and not in_cursor:
+            out.append('[')
+            in_cursor = True
+        elif not is_cursor and in_cursor:
+            out.append(']')
+            in_cursor = False
+
+        if b == 0x5F:
             out.append('°')
         elif b >= 0x20:
             out.append(chr(b))
         else:
             out.append(' ')
+
+    if in_cursor:
+        out.append(']')
+
     return ''.join(out)
 
 
