@@ -44,6 +44,13 @@ CMD_POOL_SPA    = _mk_cmd(bytes.fromhex("40000000"))
 CMD_HP          = _mk_cmd(bytes.fromhex("00000400"))
 CMD_SUPER_CHLOR = _mk_cmd(bytes.fromhex("00000004"))
 
+# Navigation keys (bus-confirmed 2026-07-07)
+CMD_MENU  = _mk_cmd(bytes.fromhex("02000000"))
+CMD_PLUS  = _mk_cmd(bytes.fromhex("20000000"))
+CMD_MINUS = _mk_cmd(bytes.fromhex("10000000"))
+CMD_LEFT  = _mk_cmd(bytes.fromhex("04000000"))
+CMD_RIGHT = _mk_cmd(bytes.fromhex("01000000"))
+
 
 class ProLogicController:
     """
@@ -195,6 +202,10 @@ class ProLogicController:
             else:
                 _LOGGER.error("send_command %s: FAILED after retry", key)
             return result
+
+    async def send_nav_key(self, frame: bytes) -> None:
+        """Fire a navigation key once. No verify loop — display updates confirm it."""
+        await self._send_raw(frame)
 
     async def _send_raw(self, data: bytes) -> None:
         if self._writer is None or self._writer.is_closing():

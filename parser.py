@@ -139,6 +139,7 @@ class ProLogicParser:
     jets_timer_remaining  "H:MM" | None (text only)
     super_chlor_remaining "H:MM" | None (text only)
     panel_clock           {"hour": int, "minute": int, "dow": int} | None
+    panel_display         str | None  (raw 40-char display text, normalized — live mirror of the panel LCD)
     led_on_bytes          bytes | None
     validation_warnings   list[str]
     """
@@ -162,6 +163,7 @@ class ProLogicParser:
             "jets_timer_remaining":   None,
             "super_chlor_remaining":  None,
             "panel_clock":            None,
+            "panel_display":          None,
             "led_on_bytes":           None,
             "validation_warnings":    [],
         }
@@ -319,6 +321,10 @@ class ProLogicParser:
         s = self.state
         changed = False
 
+        if s["panel_display"] != text:
+            s["panel_display"] = text
+            changed = True
+
         for pattern, key in _TEXT_INT_FIELDS:
             m = pattern.search(text)
             if m:
@@ -390,6 +396,7 @@ def format_state(state: dict) -> str:
         f"  jets_timer        : {s.get('jets_timer_remaining')}",
         f"  super_chlor_rem   : {s.get('super_chlor_remaining')}",
         f"  panel_clock       : {clk_str}",
+        f"  panel_display     : {s.get('panel_display')!r}",
         f"  led_on_bytes      : {on.hex(' ') if on else 'None'}",
     ]
     if s.get("validation_warnings"):

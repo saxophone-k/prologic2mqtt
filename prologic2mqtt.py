@@ -27,7 +27,16 @@ import paho.mqtt.client as mqtt
 from controller import (
     ProLogicController,
     CMD_FILTER, CMD_JETS, CMD_POOL_SPA, CMD_HP, CMD_SUPER_CHLOR,
+    CMD_MENU, CMD_PLUS, CMD_MINUS, CMD_LEFT, CMD_RIGHT,
 )
+
+_NAV_KEYS = {
+    "menu":  CMD_MENU,
+    "plus":  CMD_PLUS,
+    "minus": CMD_MINUS,
+    "left":  CMD_LEFT,
+    "right": CMD_RIGHT,
+}
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -150,6 +159,18 @@ class ProLogicMQTTBridge:
             if icon: p["icon"] = icon
             self._mqtt.publish(self._disc("switch", key), json.dumps(p), retain=True)
 
+        def button(key, name, *, icon=None):
+            p = {
+                "name":          name,
+                "unique_id":     f"prologic_{key}",
+                "device":        dev,
+                "command_topic": self._t(f"{key}/set"),
+                "payload_press": "press",
+                "availability":  [avail],
+            }
+            if icon: p["icon"] = icon
+            self._mqtt.publish(self._disc("button", key), json.dumps(p), retain=True)
+
         def remove(component, key):
             """Tell HA to delete a previously discovered entity."""
             self._mqtt.publish(self._disc(component, key), "", retain=True)
@@ -181,7 +202,8 @@ class ProLogicMQTTBridge:
         sensor("spa_timer",   "Spa Timer",        icon="mdi:timer-outline")
         sensor("jets_timer",  "Spa Jets Timer",   icon="mdi:timer-outline")
         sensor("super_chlor_timer", "Super Chlorinate Timer", icon="mdi:timer-outline")
-        sensor("panel_clock", "Panel Clock",      icon="mdi:clock-outline")
+        sensor("panel_clock",   "Panel Clock",      icon="mdi:clock-outline")
+        sensor("panel_display", "Panel Display",   icon="mdi:monitor-text")
 
         # ── Switches ──────────────────────────────────────────────────────────
         switch("filter_pump", "Filter Pump",      icon="mdi:pump")
@@ -190,7 +212,14 @@ class ProLogicMQTTBridge:
         switch("pool_spa",    "Spa Mode",         icon="mdi:pool")
         switch("heat_pump",   "Heat Pump",        icon="mdi:heat-pump-outline")
 
-        log.info("MQTT Discovery published — 11 sensors + 5 switches")
+        # ── Navigation buttons ─────────────────────────────────────────────────
+        button("menu",  "Panel MENU",  icon="mdi:menu")
+        button("plus",  "Panel +",     icon="mdi:plus")
+        button("minus", "Panel −",     icon="mdi:minus")
+        button("left",  "Panel ←",     icon="mdi:arrow-left")
+        button("right", "Panel →",     icon="mdi:arrow-right")
+
+        log.info("MQTT Discovery published — 12 sensors + 5 switches + 5 buttons")
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -213,6 +242,7 @@ class ProLogicMQTTBridge:
         pub("air_temp",       state.get("air_temp_f"))
         pub("salt_ppm",       state.get("salt_ppm"))
         pub("mode",           mode)
+        pub("panel_display",  state.get("panel_display"))
         pub("panel_clock",    None)   # handled separately below
 
         # Chlorinator level: spa value in spa mode, pool value otherwise
@@ -309,6 +339,16 @@ class ProLogicMQTTBridge:
             return
         key     = topic[len(prefix):-4]
         payload = msg.payload.decode("utf-8", errors="ignore").strip().upper()
+
+        # Navigation button press
+        if key in _NAV_KEYS:
+            log.info("Nav key: %s", key)
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._ctrl.send_nav_key(_NAV_KEYS[key]), self._loop
+                )
+            return
+
         if payload not in ("ON", "OFF"):
             log.warning("Ignoring unknown payload %r on %s", payload, topic)
             return
