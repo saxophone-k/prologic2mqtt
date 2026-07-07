@@ -132,6 +132,15 @@ def _clean_display(s: str) -> str:
     in_cursor = False
     for c in s:
         o = ord(c)
+
+        if o == 0xBA:
+            # 0xBA is the LCD ROM colon glyph — its bit 7 is set by design,
+            # not by the cursor-highlight mechanism.  Pass it through as ':'
+            # without touching the cursor group state, so that sequences like
+            # 12\xba15A remain a single group [12:15A].
+            out.append(':')
+            continue
+
         is_cursor = o > 0x7F
         b = o & 0x7F
 
@@ -357,15 +366,18 @@ class ProLogicParser:
 
     def _apply_text(self, text: str) -> bool:
         """Match any recognized patterns in a 40-char screen; update state."""
-        text = text.replace('\xba', ':')   # panel uses 0xBA as colon separator
         _log.debug("Display: %r", text.strip())
         s = self.state
         changed = False
 
+        # cursor detection must run before \xba replace — _clean_display
+        # handles 0xBA internally as a group-transparent colon
         clean = _clean_display(text)
         if s["panel_display"] != clean:
             s["panel_display"] = clean
             changed = True
+
+        text = text.replace('\xba', ':')   # panel uses 0xBA as colon separator
 
         for pattern, key in _TEXT_INT_FIELDS:
             m = pattern.search(text)
