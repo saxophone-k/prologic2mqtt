@@ -213,11 +213,11 @@ class ProLogicMQTTBridge:
         switch("heat_pump",   "Heat Pump",        icon="mdi:heat-pump-outline")
 
         # ── Navigation buttons ─────────────────────────────────────────────────
-        button("menu",  "Panel MENU",  icon="mdi:menu")
-        button("plus",  "Panel +",     icon="mdi:plus")
-        button("minus", "Panel −",     icon="mdi:minus")
-        button("left",  "Panel ←",     icon="mdi:arrow-left")
-        button("right", "Panel →",     icon="mdi:arrow-right")
+        button("menu",  "Panel Menu",  icon="mdi:menu")
+        button("plus",  "Panel Plus",  icon="mdi:plus")
+        button("minus", "Panel Minus", icon="mdi:minus")
+        button("left",  "Panel Left",  icon="mdi:arrow-left")
+        button("right", "Panel Right", icon="mdi:arrow-right")
 
         log.info("MQTT Discovery published — 12 sensors + 5 switches + 5 buttons")
 
