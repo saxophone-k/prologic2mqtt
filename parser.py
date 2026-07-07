@@ -128,9 +128,16 @@ def _clean_display(s: str) -> str:
     Additionally, 0x5F (bare or with bit-7 = 0xDF) is the panel's
     degree-sign glyph; we map it to '°'.
     """
+    # Process each 20-char display line independently so brackets added to
+    # line 1 never shift the start position of line 2.
+    return _clean_line(s[:20]) + _clean_line(s[20:40])
+
+
+def _clean_line(seg: str) -> str:
+    """Clean one 20-char display line: cursor brackets + degree-sign mapping."""
     out = []
     in_cursor = False
-    for c in s:
+    for c in seg:
         o = ord(c)
 
         if o == 0xBA:
