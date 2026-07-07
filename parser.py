@@ -114,6 +114,30 @@ _TEXT_STR_FIELDS = [
 ]
 
 
+# ── Display character decoder ─────────────────────────────────────────────────
+
+def _clean_display(s: str) -> str:
+    """
+    Normalise a latin-1 decoded ProLogic display string for human reading.
+
+    The panel's LCD controller uses two quirks we undo here:
+      • bit 7 set on a character = "cursor highlight" flag on editable fields
+        (e.g. 0xB9 = highlighted '9').  Strip it → plain ASCII.
+      • 0x5F (bare or with bit-7 = 0xDF) = the panel's degree-sign glyph,
+        which renders as '°' on the physical LCD but arrives as underscore.
+    """
+    out = []
+    for c in s:
+        b = ord(c) & 0x7F       # strip bit-7 highlight flag
+        if b == 0x5F:           # degree-sign glyph → °
+            out.append('°')
+        elif b >= 0x20:
+            out.append(chr(b))
+        else:
+            out.append(' ')
+    return ''.join(out)
+
+
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 class ProLogicParser:
@@ -321,8 +345,9 @@ class ProLogicParser:
         s = self.state
         changed = False
 
-        if s["panel_display"] != text:
-            s["panel_display"] = text
+        clean = _clean_display(text)
+        if s["panel_display"] != clean:
+            s["panel_display"] = clean
             changed = True
 
         for pattern, key in _TEXT_INT_FIELDS:
